@@ -167,14 +167,18 @@ def make_handler(target: Service | Router):
                 self._watch_client(self.cancel)
             return self.cancel
 
-        def _take_turn(self, stream: bool = False) -> None:
+        def _take_turn(self, stream: bool = False, *, control=None) -> None:
             """Wait for this request's model to be loaded and its turn to come, which may take a swap. A stream gets
             its headers and keep-alives while it waits; a client that leaves gives its place up (ClientGone)."""
+            if control is not None:
+                control.check()
             self.turn = router.join(self.svc)
             if router.wait(self.turn, 0):
                 return
             cancel, beat = self._client_cancel(), time.monotonic()
             while not router.wait(self.turn, TURN_POLL_S):
+                if control is not None:
+                    control.check()
                 if cancel.is_set():
                     raise ClientGone
                 if stream and time.monotonic() - beat >= QUEUE_BEAT_S:
@@ -345,7 +349,9 @@ def make_handler(target: Service | Router):
                 self._json(200, s)
             elif path in ("/v1/models", "/models"):
                 if self._authorized():
-                    self._json(200, {"object": "list", "data": router.models()})
+                    models = router.models()
+                    # "data" is the OpenAI list shape; "models" is what newer Codex builds decode
+                    self._json(200, {"object": "list", "data": models, "models": models})
             elif path == "/props":
                 if self._authorized():
                     self._props()
@@ -398,15 +404,16 @@ def make_handler(target: Service | Router):
                     raise ValueError("send a JSON object")
                 # ---- Jev: preserve auth, body, disconnect and error boundaries ----
                 if path in DECISION_ROUTES:
-                    if svc.jev is None:
-                        self._json(404, {"error": {"message": "not found"}})
-                        return
-                    if req.get("model", svc.model) not in svc.served_names():
+                    self.svc = router.service_for(req.get("model", svc.model))
+                    if self.svc is None:
                         self._unknown_model(path, req.get("model"))
                         return
-                    cancel = threading.Event()
-                    self._watch_client(cancel)
-                    self._json(200, svc.jev.run(req, cancel, path == "/v1/systemone"))
+                    if self.svc.jev is None:
+                        self._json(404, {"error": {"message": "not found"}})
+                        return
+                    self._json(200, self.svc.jev.run(req, self._client_cancel(), path == "/v1/systemone",
+                                                   image_access=self._image_access(),
+                                                   take_turn=lambda control: self._take_turn(control=control)))
                     return
                 # ---- end Jev ----
                 if path.startswith("/v1/responses/"):        # nothing is stored

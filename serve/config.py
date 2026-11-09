@@ -206,7 +206,7 @@ def load_config_file(path: str, ap: argparse.ArgumentParser) -> ConfigFile:
         out = ModelEntry(str(here / os.path.expanduser(entry["model"])), list(shared_argv), list(shared_words))
         for key, value in entry.items():
             name = config_name(key)
-            if name in ENTRY_OPTIONS or name in MODEL_OPTIONS:
+            if name in ENTRY_OPTIONS or name in MODEL_OPTIONS or name == "jev":
                 out.argv += option_words(where, key, value, known[name], here)
             elif name in known:
                 raise ValueError(f'{where}.{key}: a server option, set it under "server"')

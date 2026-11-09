@@ -45,20 +45,23 @@ class Decisions:
     def _score(self, rows, control, embeddings=None):
         return self.batches.score(rows, control, embeddings)
 
-    def run(self, body, cancel, system_one=False):
+    def run(self, body, cancel, system_one=False, *, image_access=None, take_turn=None):
         started = time.monotonic()
         control = Control(cancel, self.timeout)
         with self.gate.admit():
             parsed = systemone.parse(body) if system_one else schema.parse(body, self.tree_max)
             if not callable(getattr(self.svc.engine, "score", None)):
                 raise EngineError("Jev requires the native Basalt scoring engine")
+            if take_turn is not None:
+                take_turn(control)
+                control.check()
             if not self.svc.loaded() or getattr(self.svc.engine, "asleep", False) is True:
                 with self.lease(control):
                     pass
             images = parsed[7] if system_one else ()
             picture = None
             if images:
-                counts = self.svc.vision_encode(list(images))
+                counts = self.svc.vision_encode(list(images), image_access=image_access)
                 picture = Picture(images, tuple(counts), self.svc.embeddings.path)
             try:
                 result = self.evaluate(parsed[:6], control, started, system_one, picture)

@@ -25,6 +25,7 @@ from serve.engine.process import ProcessEngine
 from serve.engine.errors import EngineError
 from serve.frontend import ChatTemplate
 from serve.handler import serve
+from serve.router import Router
 from serve.service import Service
 from serve.util.text import ByteTokenizer
 
@@ -105,6 +106,16 @@ class Finite(unittest.TestCase):
             parse([], {"server": {"jev": True}})
         with self.assertRaisesRegex(ValueError, "server option"):
             parse([], {"engine": {"jev": True}})
+
+    def test_json_model_can_override_the_shared_jev_default(self):
+        from serve.config import model_settings
+        from serve.tests.test_config import conf
+        file = conf({"version": 2, "server": {"jev": 1},
+                     "models": [{"model": "qwen.basalt", "jev": 4}, {"model": "deepseek.basalt", "jev": 0},
+                                {"model": "other.basalt"}]})
+        argv = ["--config", file]
+        self.assertEqual([a.jev for a, *_ in model_settings(build_parser(), argv)], [4, 0, 1])
+        self.assertEqual([a.jev for a, *_ in model_settings(build_parser(), argv + ["--jev", "0"])], [0, 0, 0])
 
     def test_systemone_score_and_choice_math(self):
         req = {"state": "text", "questions": {"q": {"type": "score", "criteria": ["low", "mid", "high"]}}}
@@ -565,6 +576,59 @@ class Integration(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError) as got:
             urllib.request.urlopen(req)
         self.assertEqual(got.exception.code, 404)
+
+    def test_systemone_holds_named_model_turn_and_uses_request_image_policy(self):
+        target, _, eyes = self.picture()
+        target.model = "second"
+        self.svc.jev = None
+        router = Router([self.svc, target])
+        router.current = target
+        httpd = serve(router, port=0)
+        self.addCleanup(httpd.server_close)
+        self.addCleanup(httpd.shutdown)
+        url = f"http://127.0.0.1:{httpd.server_address[1]}/v1/systemone"
+        body = {"model": target.model, "state": "s", "images": ["shot.png"], "questions": {"q": {"type": "noul"}}}
+        seen = []
+        read = eyes.read
+
+        def read_image(sources, allowed):
+            seen.append((router.running, allowed.local))
+            return read(sources, allowed)
+
+        eyes.read = read_image
+        for forwarded in (False, True):
+            headers = {"Content-Type": "application/json"}
+            if forwarded:
+                headers["X-Forwarded-For"] = "203.0.113.5"
+            req = urllib.request.Request(url, data=json.dumps(body).encode(), headers=headers)
+            with urllib.request.urlopen(req) as response:
+                self.assertEqual(json.load(response)["model"], target.model)
+            with router.cv:
+                self.assertTrue(router.cv.wait_for(lambda: router.running == 0, 2))
+        self.assertEqual(seen, [(1, True), (1, False)])
+
+    def test_a_decision_can_expire_while_waiting_for_its_model(self):
+        target, _, eyes = self.picture()
+        target.model = "second"
+        target.jev.timeout = 0.02
+        router = Router([self.svc, target])
+        router.current = self.svc
+        self.addCleanup(router.stop)
+        held = router.join(self.svc)
+        self.addCleanup(router.leave, held)
+        httpd = serve(router, port=0)
+        self.addCleanup(httpd.server_close)
+        self.addCleanup(httpd.shutdown)
+        url = f"http://127.0.0.1:{httpd.server_address[1]}/v1/decision"
+        req = urllib.request.Request(url, data=json.dumps({**REQUEST, "model": target.model}).encode(),
+                                     headers={"Content-Type": "application/json"})
+        with self.assertRaises(urllib.error.HTTPError) as got:
+            urllib.request.urlopen(req, timeout=3)
+        self.assertEqual(got.exception.code, 504)
+        with router.cv:
+            self.assertTrue(router.cv.wait_for(lambda: not router.queue, 2))
+        self.assertEqual(eyes.calls, 0)
+        self.assertEqual(target.jev.gate.outstanding, 0)
 
     def test_native_protocol_does_not_generate_or_leave_unread_lines(self):
         engine = ProcessEngine.__new__(ProcessEngine)

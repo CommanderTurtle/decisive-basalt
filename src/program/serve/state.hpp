@@ -125,6 +125,7 @@ public:
     virtual void enc_command(const std::string& cmd) = 0;
     virtual size_t spill_to_disk(bool at_exit, size_t limit) = 0;
     virtual bool park_idle_engine(std::string& e) = 0;
+    virtual void kv_ceiling_note() {}   // a model with an elastic KV sends its ceiling again when it moves
     // ---- Jev: what the model answers for a scoring request; a model that cannot score takes the defaults ----
     virtual bool expire_jev(std::string&, bool = false) { return true; }   // release what the scoring request borrowed
     virtual void release_score_workspace() {}    // drop the extra verify workspace a scoring request reserved

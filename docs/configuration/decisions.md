@@ -11,6 +11,10 @@ Rebuild the native binary and run `bin/basalt serve --config basalt_config.json`
 equivalent is `--jev 1`; `--jev 0` overrides the file and disables it. Omission and `0` keep Jev off. Put its settings under `server`,
 where the API lives; the server enables the native `--jev` capability itself.
 
+Jev uses the Qwen4Exp scorer. On a mixed-model server, set `jev` in individual `models` entries
+to override the server default, and leave it at `0` for DeepSeek. A request's `model` selects the
+configured scorer; omitting it selects the first model.
+
 The engine requires a version 2 `.basalt` pack. An existing version 1 pack can be migrated with upstream's
 [pack migration](../../tools/migrations/README.md), preserving its weights and quantization.
 

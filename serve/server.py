@@ -12,6 +12,7 @@ context are rejected with a 400, never truncated.
 from __future__ import annotations
 
 import json
+import os
 import signal
 import sys
 import threading
@@ -91,6 +92,32 @@ def open_when_ready(svc, url, now=False, opener=None):
             done.append(1)
             opener(url)
     svc.on_loaded = loaded
+
+
+def model_file_problems(settings) -> list[str]:
+    """One plain line for each configured model whose file is missing, a directory or unreadable (the same paths the
+    engine is given: relative ones are already resolved against the config file)."""
+    out = []
+    for i, (m, *_rest) in enumerate(settings):
+        if not m.model or not m.engine_bin or (m.mock_engine and m.config):
+            continue
+        if m.config:
+            who = f"model '{m.alias}'" if m.alias else f"models[{i}]"
+            where = f' (the "model" key in {Path(m.config).name})'
+        else:
+            who, where = "model", " (--model)"
+        if os.path.isdir(m.model):
+            why = f"{m.model} is a directory, not a model file"
+        elif not os.path.exists(m.model):
+            why = f"file not found: {m.model}"
+        else:
+            try:
+                with open(m.model, "rb"):
+                    continue
+            except OSError as e:
+                why = f"can't read {m.model}: {e.strerror or e}"
+        out.append(f"{who}: {why}{where}")
+    return out
 
 
 def check_model(a, file_engine: list[str], cli_engine: list[str], used_argv: list[str], known) -> dict:
@@ -293,17 +320,23 @@ def main() -> int:
     multi = len(settings) > 1
     service.DEBUG, engine_process.REQUEST_LINES = a.debug, a.request_lines
     # ---- Jev: reject unusable settings before loading weights ----
-    for name, lo, hi in (("jev", 0, 8), ("jev_max_pending", 0, 256), ("jev_timeout", 1, 3600),
-                         ("jev_max_nodes", 1, 65536), ("jev_tree_max", 1, 255)):
-        if not lo <= getattr(a, name) <= hi:
-            fail(f"--{name.replace('_', '-')}: expected {lo}..{hi}")
-    if a.jev and a.mock_engine:
-        fail("--jev requires the native target-head scorer")
+    for model, *_ in settings:
+        for name, lo, hi in (("jev", 0, 8), ("jev_max_pending", 0, 256), ("jev_timeout", 1, 3600),
+                             ("jev_max_nodes", 1, 65536), ("jev_tree_max", 1, 255)):
+            if not lo <= getattr(model, name) <= hi:
+                fail(f"--{name.replace('_', '-')}: expected {lo}..{hi}")
+        if model.jev and model.mock_engine:
+            fail("--jev requires the native target-head scorer")
     # ---- end Jev ----
     logs = LogBuffer()                                  # this process's and the engine's output
     sys.stdout, sys.stderr = (TeeStream(ColorStream.wrap(sys.stdout), logs, "srv"),
                               TeeStream(ColorStream.wrap(sys.stderr), logs, "srv"))
     print(tagged("legend", LEGEND), flush=True)          # first line, so the key precedes every value
+    problems = model_file_problems(settings)
+    for line in problems:
+        print(f"[server] error: {line}", file=sys.stderr)
+    if problems:
+        return 2
     known = engine_flags_of(a.engine_bin) if a.engine_bin else None
     cfgs = [check_model(m, file_engine, cli_engine, used_argv, known)
             for m, used_argv, file_engine, cli_engine in settings]

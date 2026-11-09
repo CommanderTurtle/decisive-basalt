@@ -28,6 +28,12 @@ public:
 
     model::ModelDesc describe(const GgufFile& g) const override { return describe_meta(g); }
 
+    // the routing order of the experts and the drafter's ranking of each stage's experts
+    std::vector<std::string> shipped_profiles(const std::string& key) const override {
+        if (key != "deepseek41-40x384") return {};
+        return {key + ".prof", key + "-dspark.prof"};
+    }
+
     model::Result load(const model::LoadRequest& req, std::unique_ptr<model::LoadedModel>& out) const override {
         if (req.paths.empty()) return {model::Status::Error, "deepseek41: no model path"};
         auto m = std::make_unique<DsModel>();
@@ -95,6 +101,10 @@ public:
 
     // A context the pack refuses is refused with the flags, before anything loads; the memory check needs the card.
     std::optional<int> finish_flags(program::CommonOptions& o) const override {
+        if (o.jev != 0) {
+            basalt::log::error("basalt deepseek41", "--jev requires a model with native decision scoring");
+            return 2;
+        }
         CacheFormat fmt = CacheFormat::Fp8;
         if (o.kv.empty()) o.kv = "fp8";
         if (!ctxp::cache_format(o.kv, fmt)) {
